@@ -1,0 +1,139 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+import "./IERC20.sol";
+import "@openzeppelin/contracts/utils/math/SafeMath.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
+
+contract CryptoStakingPlatform is Ownable {
+    using SafeMath for uint256;
+
+    // Token being staked
+    IERC20 public stakingToken;
+
+    // Reward token (can be the same as stakingToken or different)
+    IERC20 public rewardToken;
+
+    // Staking info
+    struct Stake {
+        uint256 amount;
+        uint256 startTime;
+        uint256 endTime;
+        uint256 reward;
+        bool active;
+    }
+
+    // User stakes mapping
+    mapping(address => Stake[]) public userStakes;
+
+    // Total staked amount
+    uint256 public totalStaked;
+
+    // Reward rate per second
+    uint256 public rewardRate = 1 ether; // 1 reward token per second
+
+    // Events
+    event Staked(address indexed user, uint256 amount);
+    event Withdrawn(address indexed user, uint256 amount);
+    event RewardPaid(address indexed user, uint256 amount);
+
+    constructor(address _stakingToken, address _rewardToken) {
+        stakingToken = IERC20(_stakingToken);
+        rewardToken = IERC20(_rewardToken);
+    }
+
+    // Stake tokens
+    function stake(uint256 amount) external {
+        require(amount > 0, "Amount must be greater than 0");
+        require(stakingToken.transferFrom(msg.sender, address(this), amount), "Transfer failed");
+
+        userStakes[msg.sender].push(Stake({
+            amount: amount,
+            startTime: block.timestamp,
+            endTime: 0,
+            reward: 0,
+            active: true
+        }));
+
+        totalStaked = totalStaked.add(amount);
+        emit Staked(msg.sender, amount);
+    }
+
+    // Withdraw staked tokens
+    function withdraw(uint256 stakeIndex) external {
+        require(stakeIndex < userStakes[msg.sender].length, "Invalid stake index");
+        Stake storage stake = userStakes[msg.sender][stakeIndex];
+        require(stake.active, "Stake already withdrawn");
+
+        uint256 reward = calculateReward(msg.sender, stakeIndex);
+        stake.active = false;
+        totalStaked = totalStaked.sub(stake.amount);
+
+        require(stakingToken.transfer(msg.sender, stake.amount), "Transfer failed");
+        if (reward > 0) {
+            require(rewardToken.transfer(msg.sender, reward), "Reward transfer failed");
+        }
+
+        emit Withdrawn(msg.sender, stake.amount);
+        if (reward > 0) {
+            emit RewardPaid(msg.sender, reward);
+        }
+    }
+
+    // Calculate accumulated rewards
+    function calculateReward(address user, uint256 stakeIndex) public view returns (uint256) {
+        Stake storage stake = userStakes[user][stakeIndex];
+        uint256 reward = stake.reward;
+        if (stake.active) {
+            uint256 endTime = block.timestamp;
+            uint256 duration = endTime.sub(stake.startTime);
+            reward = reward.add(duration.mul(rewardRate));
+        }
+        return reward;
+    }
+
+    // Claim rewards without withdrawing staked tokens
+    function claimReward(uint256 stakeIndex) external {
+        require(stakeIndex < userStakes[msg.sender].length, "Invalid stake index");
+        Stake storage stake = userStakes[msg.sender][stakeIndex];
+        require(stake.active, "Stake inactive");
+
+        uint256 reward = calculateReward(msg.sender, stakeIndex);
+        stake.reward = 0;
+
+        require(rewardToken.transfer(msg.sender, reward), "Reward transfer failed");
+        emit RewardPaid(msg.sender, reward);
+    }
+
+    // Owner function to set reward rate (reward tokens per second)
+    function setRewardRate(uint256 _rewardRate) external onlyOwner {
+        rewardRate = _rewardRate;
+    }
+
+    // Owner function to withdraw any remaining reward tokens
+    function withdrawRewardTokens(uint256 amount) external onlyOwner {
+        require(rewardToken.transfer(owner(), amount), "Reward transfer failed");
+    }
+
+    // View function to get total stakes for a user
+    function getUserTotalStaked(address user) external view returns (uint256) {
+        uint256 total = 0;
+        Stake[] storage stakes = userStakes[user];
+        for (uint256 i = 0; i < stakes.length; i++) {
+            if (stakes[i].active) {
+                total = total.add(stakes[i].amount);
+            }
+        }
+        return total;
+    }
+
+    // View function to get total rewards for a user
+    function getUserTotalRewards(address user) external view returns (uint256) {
+        uint256 total = 0;
+        Stake[] storage stakes = userStakes[user];
+        for (uint256 i = 0; i < stakes.length; i++) {
+            total = total.add(stakes[i].reward);
+        }
+        return total;
+    }
+}
